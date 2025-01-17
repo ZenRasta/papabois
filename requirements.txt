@@ -1,4 +1,4 @@
-telebot
-kindwise
-requests
-python-dotenv
+pyTelegramBotAPI==4.15.4
+openai==1.12.0
+requests==2.31.0
+python-dotenv==1.0.0
