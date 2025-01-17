@@ -1,0 +1,4 @@
+telebot
+kindwise
+requests
+python-dotenv

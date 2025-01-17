@@ -33,58 +33,87 @@ for var_name, var_value in {
     if not var_value:
         raise ValueError(f"Please set the {var_name} env var")
 
-# Initialize bot and API
+# Define states
+class UserStates(StatesGroup):
+    waiting_for_photo = State()
+
+# Initialize bot and APIs
 state_storage = StateMemoryStorage()
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, state_storage=state_storage)
 bot.add_custom_filter(StateFilter(bot))
 api = PlantApi(api_key=PLANT_API_KEY)
 
-# Define states
-class UserStates(StatesGroup):
-    waiting_for_photo = State()
-
-def get_plant_persona(plant_info: dict) -> str:
-    """Get a personalized response from the plant using OpenRouter/Grok."""
-    try:
-        prompt = f"""You are {plant_info['name']}, a mystical plant entity. 
-Based on this information about yourself:
-- Scientific name: {plant_info['name']}
-- Common names: {', '.join(plant_info['details'].get('common_names', []))}
-- Description: {plant_info['details'].get('description', 'Unknown')}
-- Healing properties: {plant_info.get('healing_properties', 'Unknown')}
-
-Introduce yourself and tell us about who you are, where you're from, your benefits, and what makes you happy. 
-Speak in a mystical, wise, and enchanting voice, as if you're an ancient being sharing your wisdom.
-Keep the response concise but magical."""
-
-        response = requests.post(
-            url="https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "HTTP-Referer": "http://localhost",
-                "X-Title": "Plant Spirit Bot",
+def get_openrouter_response(prompt: str) -> str:
+    """Helper function to call OpenRouter API directly"""
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "HTTP-Referer": "https://github.com/",
+        "X-Title": "Plant Spirit Bot",
+        "Content-Type": "application/json"
+    }
+    
+    payload = {
+        "model": "gpt-3.5-turbo",
+        "messages": [
+            {
+                "role": "system",
+                "content": "You are a mystical plant spirit, sharing ancient wisdom about your nature and properties."
             },
-            data=json.dumps({
-                "model": "x-ai/grok-2-1212",
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ]
-            })
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+    }
+    
+    try:
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers=headers,
+            json=payload
         )
         
         if response.status_code == 200:
-            result = response.json()
-            return result['choices'][0]['message']['content']
+            return response.json()['choices'][0]['message']['content']
         else:
-            logger.error(f"OpenRouter API error: {response.text}")
-            return "I seem to be in deep meditation at the moment... 🌿"
-
+            logger.error(f"OpenRouter Error: Status {response.status_code} - {response.text}")
+            return "The spirits are quiet at the moment... 🌿"
     except Exception as e:
-        logger.error(f"Error getting plant persona: {str(e)}")
-        return "I am currently communing with nature... Try again later 🌱"
+        logger.error(f"OpenRouter API error: {str(e)}")
+        return "Nature's wisdom is temporarily veiled... 🍃"
+
+def get_plant_persona(plant_info: dict) -> str:
+    """Get a personalized response from the plant using OpenRouter."""
+    try:
+        prompt = f"""You are {plant_info['name']}, speaking as a mystical plant entity.
+        
+Scientific Details:
+- Name: {plant_info['name']}
+- Common Names: {', '.join(plant_info.get('common_names', []))}
+- Description: {plant_info.get('description', 'A mysterious plant of ancient wisdom')}
+- Healing Properties: {plant_info.get('healing_properties', 'Powers yet to be fully understood')}
+
+Share your story in a mystical, wise voice, covering:
+1. Your origins and native lands
+2. Your healing powers and gifts to humanity
+3. What brings you joy in the natural world
+4. Ancient wisdom or warnings you wish to share
+
+Remember, speak as the plant itself, sharing deep wisdom while being engaging and unique."""
+
+        return get_openrouter_response(prompt)
+    except Exception as e:
+        logger.error(f"Error in get_plant_persona: {str(e)}")
+        return "The ancient wisdom eludes me at this moment... 🌿"
+
+def get_healing_properties(plant_name: str) -> str:
+    """Get healing properties using OpenRouter."""
+    try:
+        prompt = f"What are the traditional medicinal and healing properties of {plant_name}? Include both benefits and any potential risks or warnings."
+        return get_openrouter_response(prompt)
+    except Exception as e:
+        logger.error(f"Error getting healing properties: {str(e)}")
+        return "Properties yet to be discovered..."
 
 def identify_plant_from_path(image_path: str) -> dict:
     """Identify a plant from an image file using Kindwise API."""
@@ -96,7 +125,7 @@ def identify_plant_from_path(image_path: str) -> dict:
         logger.info(f"Processing image: {image_path}")
         identification = api.identify(
             image_path,
-            details=['common_names', 'taxonomy', 'description'],
+            details=['taxonomy', 'common_names', 'description'],
             language=['en'],
             similar_images=True,
             date_time=datetime.now(),
@@ -117,30 +146,16 @@ def identify_plant_from_path(image_path: str) -> dict:
         for suggestion in suggestions[:3]:
             plant_info = {
                 "name": suggestion.name,
-                "confidence": suggestion.probability,
-                "details": {}
+                "confidence": suggestion.probability
             }
             
-            try:
-                search_result = api.search(suggestion.name, language='en', limit=1)
-                if search_result.entities:
-                    details = api.get_kb_detail(
-                        search_result.entities[0].access_token,
-                        details=['common_names', 'description'],
-                        language='en'
-                    )
-                    plant_info["details"] = details
-                    
-                if suggestion == suggestions[0]:
-                    healing_props = api.ask_question(
-                        identification.access_token,
-                        "What are the traditional medicinal and healing properties of this plant?",
-                        model="gpt-3.5-turbo.demo"
-                    )
-                    if healing_props and hasattr(healing_props, 'messages'):
-                        plant_info["healing_properties"] = healing_props.messages[-1].content
-            except Exception as e:
-                logger.error(f"Error getting additional details: {str(e)}")
+            # Get common names and description directly from suggestion object
+            if hasattr(suggestion, 'details'):
+                plant_info.update(suggestion.details)
+
+            # Get healing properties using OpenRouter for top match
+            if suggestion == suggestions[0]:
+                plant_info['healing_properties'] = get_healing_properties(suggestion.name)
 
             results.append(plant_info)
 
@@ -149,7 +164,7 @@ def identify_plant_from_path(image_path: str) -> dict:
     except Exception as e:
         logger.error(f"Error during plant identification: {str(e)}")
         return {"error": str(e)}
-
+    
 @bot.message_handler(commands=['start'])
 def cmd_start(message):
     """Handle /start command"""
